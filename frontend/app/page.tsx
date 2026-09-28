@@ -410,7 +410,7 @@ export default function Page() {
         >
           {shortAddress(CONTRACT_ADDRESS) || "not configured"}
         </a>{" "}
-        on GenLayer Studio Next -- not an official
+        on GenLayer Studio Next. Built for a GenLayer hackathon -- not an official
         GenLayer product.
       </p>
     </main>
