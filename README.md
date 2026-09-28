@@ -18,15 +18,25 @@ breach, because that takes reasoning, not a threshold.
 
 1. Records a plain-English SLA between a `provider` and a `client`, backed by
    a GEN bond.
-2. Lets either party stream activity for the current interval into an
-   on-chain log (`report_activity`).
-3. On `request_judgment`, asks GenLayer's validator set to read the SLA terms
-   and the interval's activity log and reach a **breach / no-breach**
-   verdict by consensus (`gl.eq_principle.prompt_comparative`) -- a judgment
-   call a plain if/else check can't make.
-4. A confirmed breach slashes a configurable percentage of the remaining
+2. Lets either party log **attributable, verifiable** events for the current
+   interval (`report_activity`) -- each entry carries an external event id,
+   a description, and an evidence reference, plus the reporter's address and
+   role recorded automatically. Free-form, unlabeled text is not accepted.
+3. Requires the reporting phase to be explicitly sealed (`close_reporting_phase`)
+   before a verdict can be requested at all -- this is what makes an "early"
+   judgment on a still-open interval impossible.
+4. On `request_judgment`, asks GenLayer's validator set to read the SLA terms
+   and *only the current interval's* sealed activity log, and reach a
+   **breach / no-breach** verdict by consensus
+   (`gl.eq_principle.prompt_comparative`) -- a judgment call a plain if/else
+   check can't make. The verdict's shape is validated strictly: a `breach`
+   field that isn't a real boolean, or a missing/empty `reasoning`, reverts
+   the transaction instead of being silently coerced.
+5. A confirmed breach slashes a configurable percentage of the remaining
    bond to the client and is recorded permanently. A clean interval builds
-   the provider's track record (`clean_count` / `breach_count`).
+   the provider's track record (`clean_count` / `breach_count`). Either
+   party can then close the SLA -- but only once nothing is left pending, so
+   a party can't sidestep a verdict already in motion by closing early.
 
 This is a real deployment target, not a simulation: every write goes through
 GenLayer Studio Next's fee-charging consensus v0.6 lifecycle, and the
@@ -55,11 +65,27 @@ Public methods:
 | Method | Who | What it does |
 | --- | --- | --- |
 | `deposit_bond()` (payable) | provider | Stakes GEN behind the SLA. |
-| `report_activity(description)` | provider or client | Appends one entry to the current interval's log. |
-| `request_judgment()` | anyone | Sends the SLA terms + activity log to the validator set; records a breach/no-breach verdict; slashes the bond on a confirmed breach; resets the interval. |
-| `close_sla()` | provider or client | Deactivates the SLA. |
+| `report_activity(event_id, description, evidence_ref)` | provider or client | Appends one attributable event to the current interval's log. Rejects duplicate `event_id`s within the same interval, and is blocked once the reporting phase is closed. |
+| `close_reporting_phase()` | provider or client | Seals the current interval (requires at least one report). Required before `request_judgment()` will run -- this is the gate against early judgment. |
+| `request_judgment()` | anyone | Sends the SLA terms + the sealed interval's activity log to the validator set; strictly validates the verdict's shape; records a breach/no-breach verdict; slashes the bond on a confirmed breach; opens a fresh interval. |
+| `close_sla()` | provider or client | Deactivates the SLA. Reverts if any activity is still pending judgment (phase open with reports, or phase closed and awaiting a verdict). |
 | `withdraw_remaining_bond()` | provider | Withdraws whatever bond is left, once closed. |
-| `get_sla_info()`, `get_activity_log()`, `get_verdicts()` | anyone (view) | Read current state. |
+| `get_sla_info()`, `get_activity_log()`, `get_verdicts()` | anyone (view) | Read current state. `get_activity_log()` only ever returns the current, not-yet-judged interval. |
+
+### Lifecycle per interval
+
+```
+report_activity()  (repeatable, attributable events only)
+        v
+close_reporting_phase()   <- required; blocks report_activity() and request_judgment() from
+        v                     racing each other, and is the "early judgment" guard
+request_judgment()  (validator consensus; breach/no-breach + reasoning)
+        v
+   back to report_activity() for the next interval
+```
+
+`close_sla()` only succeeds between intervals, once a judgment has resolved
+everything pending -- never mid-phase.
 
 ### Deploying the contract on Studio Next
 
@@ -116,6 +142,31 @@ NEXT_PUBLIC_CONTRACT_ADDRESS=0x... # the address from the deploy step above
 5. Anyone: request a validator judgment and watch the verdict come back.
 6. Repeat step 4-5 for as many intervals as you like; close the SLA and
    withdraw the remaining bond when you're done.
+
+## Tests
+
+`tests/test_sla_monitor.py` uses GenLayer's Direct Mode testing framework
+(`pip install genlayer-test`), which runs the contract's Python directly
+in-memory -- no Docker or Studio needed -- with the LLM call mocked so
+verdicts are deterministic. Run with:
+
+```
+pip install genlayer-test
+pytest tests/ -v
+```
+
+It covers:
+
+- **Repeated intervals are isolated** -- a shorter second interval never
+  inherits leftover entries from a longer first one, and the activity log
+  reads empty again right after each verdict.
+- **Early judgment reverts** -- `request_judgment()` fails while the
+  reporting phase is still open, even with activity already logged.
+- **Closing with pending activity reverts** -- `close_sla()` fails both
+  while reports are sitting in an unclosed phase and while a closed phase
+  is awaiting a verdict.
+- **Strict verdict validation** -- a verdict where `breach` isn't a real
+  boolean is rejected rather than coerced.
 
 ## What's next (post-hackathon)
 

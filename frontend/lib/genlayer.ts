@@ -150,8 +150,20 @@ export async function submitWrite({
 export const writeDepositBond = (account: `0x${string}`, valueWei: bigint) =>
   submitWrite({ account, functionName: "deposit_bond", args: [], value: valueWei });
 
-export const writeReportActivity = (account: `0x${string}`, description: string) =>
-  submitWrite({ account, functionName: "report_activity", args: [description] });
+export const writeReportActivity = (
+  account: `0x${string}`,
+  eventId: string,
+  description: string,
+  evidenceRef: string
+) =>
+  submitWrite({
+    account,
+    functionName: "report_activity",
+    args: [eventId, description, evidenceRef],
+  });
+
+export const writeCloseReportingPhase = (account: `0x${string}`) =>
+  submitWrite({ account, functionName: "close_reporting_phase", args: [] });
 
 export const writeRequestJudgment = (account: `0x${string}`) =>
   submitWrite({ account, functionName: "request_judgment", args: [] });

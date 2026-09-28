@@ -10,6 +10,7 @@ import {
   readSlaInfo,
   readVerdicts,
   shortAddress,
+  writeCloseReportingPhase,
   writeCloseSla,
   writeDepositBond,
   writeReportActivity,
@@ -25,7 +26,8 @@ type SlaInfo = {
   bond_total?: string | number;
   bond_remaining?: string | number;
   is_active?: boolean;
-  activity_count?: string | number;
+  awaiting_judgment?: boolean;
+  pending_activity_count?: string | number;
   verdict_count?: string | number;
   breach_count?: string | number;
   clean_count?: string | number;
@@ -43,7 +45,9 @@ export default function Page() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const [eventId, setEventId] = useState("");
   const [activityDesc, setActivityDesc] = useState("");
+  const [evidenceRef, setEvidenceRef] = useState("");
   const [bondAmount, setBondAmount] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -259,56 +263,119 @@ export default function Page() {
                     Report activity (provider or client)
                   </div>
                   <div className="step-desc">
-                    Log what happened this interval -- response times, what was
-                    delivered, anything relevant to the SLA terms above.
+                    Every entry must be attributable and verifiable: an event id the
+                    other party can look up (a ticket number, request id), a plain
+                    description, and an evidence reference (a URL, transcript link, or
+                    hash). Free-form text alone is not accepted.
+                  </div>
+                  <div className="row" style={{ marginBottom: 8 }}>
+                    <input
+                      placeholder="Event id, e.g. ticket-482"
+                      value={eventId}
+                      onChange={(e) => setEventId(e.target.value)}
+                      disabled={!isParty || sla.awaiting_judgment}
+                    />
+                    <input
+                      placeholder="Evidence ref, e.g. a URL or transcript hash"
+                      value={evidenceRef}
+                      onChange={(e) => setEvidenceRef(e.target.value)}
+                      disabled={!isParty || sla.awaiting_judgment}
+                    />
                   </div>
                   <div className="row">
                     <textarea
                       rows={2}
-                      placeholder="e.g. Ticket #482 opened 14:02, first response 14:07, resolved 14:40 without escalation."
+                      placeholder="What happened: first response time, what was delivered, anything relevant to the SLA terms above."
                       value={activityDesc}
                       onChange={(e) => setActivityDesc(e.target.value)}
-                      disabled={!isParty}
+                      disabled={!isParty || sla.awaiting_judgment}
                     />
                     <button
                       className="btn secondary"
-                      disabled={!account || !isParty || busyAction !== null || !activityDesc.trim()}
+                      disabled={
+                        !account ||
+                        !isParty ||
+                        busyAction !== null ||
+                        Boolean(sla.awaiting_judgment) ||
+                        !eventId.trim() ||
+                        !activityDesc.trim() ||
+                        !evidenceRef.trim()
+                      }
                       onClick={() =>
                         runAction("report", async () => {
-                          await writeReportActivity(account as `0x${string}`, activityDesc.trim());
+                          await writeReportActivity(
+                            account as `0x${string}`,
+                            eventId.trim(),
+                            activityDesc.trim(),
+                            evidenceRef.trim()
+                          );
+                          setEventId("");
                           setActivityDesc("");
+                          setEvidenceRef("");
                         })
                       }
                     >
                       {busyAction === "report" ? "Logging..." : "Log activity"}
                     </button>
                   </div>
+                  {sla.awaiting_judgment && (
+                    <div className="step-desc" style={{ marginTop: 8 }}>
+                      Reporting is closed for this interval -- request judgment below
+                      before logging anything new.
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="step">
                 <div className="step-num">3</div>
                 <div className="step-body">
+                  <div className="step-title">Close the reporting phase</div>
+                  <div className="step-desc">
+                    Seals this interval so judgment reads a fixed, final log --
+                    required before a verdict can be requested.
+                  </div>
+                  <button
+                    className="btn secondary"
+                    disabled={
+                      !account ||
+                      !isParty ||
+                      busyAction !== null ||
+                      !sla.is_active ||
+                      Boolean(sla.awaiting_judgment) ||
+                      Number(sla.pending_activity_count ?? 0) === 0
+                    }
+                    onClick={() =>
+                      runAction("closephase", () => writeCloseReportingPhase(account as `0x${string}`))
+                    }
+                  >
+                    {busyAction === "closephase"
+                      ? "Closing..."
+                      : `Close reporting phase (${sla.pending_activity_count ?? 0} entries)`}
+                  </button>
+                </div>
+              </div>
+
+              <div className="step">
+                <div className="step-num">4</div>
+                <div className="step-body">
                   <div className="step-title">Request validator judgment</div>
                   <div className="step-desc">
-                    Anyone can trigger this once activity has been logged. A random
-                    validator set reads the log against the SLA terms and reaches a
-                    verdict by consensus. This step calls an LLM through GenVM, so it
-                    can take a little while -- leave the tab open.
+                    Anyone can trigger this once the reporting phase is closed. A
+                    random validator set reads the sealed log against the SLA terms
+                    and reaches a verdict by consensus. This calls an LLM through
+                    GenVM, so it can take a little while -- leave the tab open.
                   </div>
                   <button
                     className="btn"
-                    disabled={
-                      !account ||
-                      busyAction !== null ||
-                      !sla.is_active ||
-                      Number(sla.activity_count ?? 0) === 0
-                    }
+                    disabled={!account || busyAction !== null || !sla.is_active || !sla.awaiting_judgment}
                     onClick={() => runAction("judge", () => writeRequestJudgment(account as `0x${string}`))}
                   >
                     {busyAction === "judge"
                       ? "Awaiting validator consensus..."
-                      : `Request judgment (${sla.activity_count ?? 0} entries pending)`}
+                      : sla.awaiting_judgment
+                        ? `Request judgment (${sla.pending_activity_count ?? 0} entries sealed)`
+                        : "Request judgment (close the reporting phase first)"}
                   </button>
                 </div>
               </div>
@@ -371,7 +438,14 @@ export default function Page() {
             <div className="row">
               <button
                 className="btn danger"
-                disabled={!account || !isParty || !sla.is_active || busyAction !== null}
+                disabled={
+                  !account ||
+                  !isParty ||
+                  !sla.is_active ||
+                  busyAction !== null ||
+                  Boolean(sla.awaiting_judgment) ||
+                  Number(sla.pending_activity_count ?? 0) > 0
+                }
                 onClick={() => runAction("close", () => writeCloseSla(account as `0x${string}`))}
               >
                 {busyAction === "close" ? "Closing..." : "Close SLA"}
